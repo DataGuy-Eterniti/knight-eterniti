@@ -1,0 +1,7 @@
+# torch / torchvision / Pillow come from the ROCm base image. Do NOT list torch here.
+transformers>=4.57,<6
+accelerate>=1.0
+huggingface_hub>=0.34
+safetensors
+tokenizers
+numpy
