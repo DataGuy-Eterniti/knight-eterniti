@@ -1,44 +1,55 @@
 # Knight Eterniti: OCR + RAG on AMD ROCm
 
-Solo entry for the **Lablab x AMD AI Academy Challenge** (Sep–Dec 2026). Each mini-challenge lives in its own folder
-and ships as a Docker image built on the mandated base,
-`rocm/pytorch:rocm10.0_ubuntu26.04_py3.14_pytorch_release_2.13.0`.
+Solo entry for the **Lablab x AMD AI Academy Challenge** (Sep–Dec 2026). Each mini-challenge is a
+Docker image built on the mandated base `rocm/pytorch:rocm10.0_ubuntu26.04_py3.14_pytorch_release_2.13.0`,
+with model weights baked in so it runs with no network.
 
-| Folder | Mini-challenge | Status |
+| Folder | Mini-challenge | Public samples |
 |---|---|---|
-| [`mc2-ocr/`](mc2-ocr/) | 2: Optical Character Recognition (plates and road signs) | Submitted |
-| `mc3-rag/` | 3: Retrieval-Augmented Generation | In progress |
+| [`mc2-ocr/`](mc2-ocr/) | 2: OCR of licence plates and road signs | 10/10 (200/200) |
+| [`mc3-rag/`](mc3-rag/) | 3: RAG over a mixed corpus, with exact citations | 10/10 (200/200) |
+
+Both use the same design. A **resident server** loads the model once at container start and listens
+on a unix socket. `app/app.py` is a **standard-library client** that starts in milliseconds and always
+writes a valid JSON file, even if the server fails. The grader starts a new process for every call,
+so loading the model inside `app.py` would blow the 30-second budget.
 
 ## Mini-Challenge 2: OCR
 
-Reads US and Chinese licence plates and road signs from PNG, JPEG and TIFF images and writes
-`/app/output/<name>_output.json` with `{"text": ..., "confidence": ...}`.
+Qwen3-VL-8B-Instruct (BF16) reads US and Chinese plates and road signs from PNG, JPEG and TIFF.
 
-**How it works**
+- The prompt encodes the transcription rules: no state banners or slogans, keep Chinese province
+  prefixes, join multi-line signs top to bottom, never add units.
+- Deterministic post-processing strips leaked banners and URLs, and normalises full-width characters and dots.
+- The build pins torch to the base image's ROCm build so pip cannot replace it with a CUDA wheel.
 
-- **Model:** Qwen3-VL-8B-Instruct in BF16 via Hugging Face Transformers on ROCm. Weights are baked into the image.
-- **Resident server** (`app/server.py`): loads the model once at container start, warms up the GPU, then listens on a
-  Unix socket. The socket only appears once the model is ready.
-- **Thin client** (`app/app.py`): standard library only, so it starts in milliseconds. It always writes a valid JSON
-  file, even if the server is down, so one bad image can't end the run.
-- **Prompt rules:** registration number only on US plates (no state banners or slogans), province character and letter
-  kept on Chinese plates, every printed word kept on signs, multi-line text joined top to bottom, no added units.
-- **Post-processing** (`app/postprocess.py`): strips leaked state names, slogans and URLs; normalises full-width
-  characters and dot variants; handles 16-bit, transparent, multi-page and EXIF-rotated images.
-- **ROCm protection** (`tools/pin_rocm.py`): pip installs run against a constraints file pinned to the base image's
-  ROCm torch, and the build fails if torch is ever replaced by a CUDA build.
-
-**Measured on an AMD Instinct MI300X (ROCm 10.0)**
-
-| Check | Result |
+| Check (MI300X, ROCm 10.0) | Result |
 |---|---|
-| Public samples | 10/10 (200/200) |
-| Model load | 8 s |
+| Public samples | 10/10 |
 | Per image | 0.26–0.46 s (limit 30 s) |
 | Peak VRAM | 18.8 GB (limit 48 GiB) |
 | Image size | 45.7 GiB uncompressed (limit 60 GiB) |
 
-These are results on the published samples, not the hidden graded set.
+## Mini-Challenge 3: RAG
 
-**Run it yourself:** see [`mc2-ocr/README.md`](mc2-ocr/README.md) for build, test and self-check commands.
-The ten public sample images and their expected answers are in `mc2-ocr/samples/`.
+Answers questions over PDF, DOCX (with tables), XLSX (all sheets), CSV, logs, code and images, and
+cites the exact set of files each answer needs.
+
+- **Index:** each file is parsed in an isolated worker process, so unreadable, encrypted or
+  unknown files are skipped without stopping the walk. Images and scanned pages are read by
+  Qwen3-VL. Withdrawn and superseded revisions are kept out of the model's context.
+- **Retrieve:** identifier-aware BM25 fused with bge-small embeddings. Rare identifiers such as
+  ticket numbers and error codes are followed across files for multi-hop questions.
+- **Cite by necessity:** a file is kept only if it holds the value or supplied the identifier
+  that leads to it. An answer found in no document is refused with an empty answer.
+
+| Check (MI300X, ROCm 10.0) | Result |
+|---|---|
+| Public samples | 10/10, exact citation sets |
+| Startup (model load + index) | about 12 s (limit 10 min) |
+| Per question | 1.0–1.9 s (limit 30 s) |
+| Peak VRAM | 20.0 GB (limit 48 GiB) |
+| Image size | 45.8 GiB uncompressed (limit 60 GiB) |
+
+Results are on the published samples, not the hidden graded sets. Build and test steps are in each
+folder's README.
